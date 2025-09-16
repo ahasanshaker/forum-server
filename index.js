@@ -1,9 +1,9 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import { MongoClient, ServerApiVersion } from 'mongodb';
+import { MongoClient, ServerApiVersion, ObjectId } from 'mongodb';
 
-dotenv.config(); // dotenv initialize করতে ভুলবে না
+dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -12,37 +12,57 @@ const port = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-
+// MongoDB connection
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.byszxkc.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
-// Create a MongoClient with a MongoClientOptions object to set the Stable API version
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
     strict: true,
     deprecationErrors: true,
-  }
+  },
 });
 
 async function run() {
   try {
-    // Connect the client to the server	(optional starting in v4.7)
     await client.connect();
-    // Send a ping to confirm a successful connection
-    await client.db("admin").command({ ping: 1 });
-    console.log("Pinged your deployment. You successfully connected to MongoDB!");
-  } finally {
-    // Ensures that the client will close when you finish/error
-    // await client.close();
+    const db = client.db("forumDB");
+    const postsCollection = db.collection("posts");
+
+    // ✅ Get all posts
+    app.get("/posts", async (req, res) => {
+      const posts = await postsCollection.find().sort({ _id: -1 }).toArray();
+      res.send(posts);
+    });
+
+    // ✅ Get single post by id
+    app.get("/posts/:id", async (req, res) => {
+      const id = req.params.id;
+      const post = await postsCollection.findOne({ _id: new ObjectId(id) });
+      if (!post) {
+        return res.status(404).send({ message: "Post not found" });
+      }
+      res.send(post);
+    });
+
+    // ✅ Add new post
+    app.post("/posts", async (req, res) => {
+      const newPost = req.body;
+      const result = await postsCollection.insertOne(newPost);
+      res.send(result);
+    });
+
+    console.log("✅ MongoDB Connected & API Ready");
+  } catch (error) {
+    console.error(error);
   }
 }
 run().catch(console.dir);
 
-
-app.get('/', (req, res) => {
-  res.send('Hello World!');
+app.get("/", (req, res) => {
+  res.send("Forum backend is running 🚀");
 });
 
 app.listen(port, () => {
-  console.log(`Example app listening on port ${port}`);
+  console.log(`Server listening on port ${port}`);
 });
