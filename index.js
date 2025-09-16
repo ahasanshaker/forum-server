@@ -51,6 +51,46 @@ async function run() {
       const result = await postsCollection.insertOne(newPost);
       res.send(result);
     });
+    // ✅ Update post
+app.put("/posts/:id", async (req, res) => {
+  const id = req.params.id;
+  const updatedData = req.body;
+
+  try {
+    const result = await postsCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: updatedData }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).send({ message: "Post not found" });
+    }
+
+    res.send({ message: "Post updated successfully" });
+  } catch (error) {
+    console.error("Error updating post:", error);
+    res.status(500).send({ message: "Internal Server Error" });
+  }
+});
+
+// ✅ Delete post
+app.delete("/posts/:id", async (req, res) => {
+  const id = req.params.id;
+
+  try {
+    const result = await postsCollection.deleteOne({ _id: new ObjectId(id) });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).send({ message: "Post not found" });
+    }
+
+    res.send({ message: "Post deleted successfully" });
+  } catch (error) {
+    console.error("Error deleting post:", error);
+    res.status(500).send({ message: "Internal Server Error" });
+  }
+});
+
 
     console.log("✅ MongoDB Connected & API Ready");
   } catch (error) {
