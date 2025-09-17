@@ -1,4 +1,3 @@
-// backend/index.js
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
@@ -21,59 +20,125 @@ async function run() {
     await client.connect();
     const db = client.db("forumDB");
     const postsCollection = db.collection("posts");
+    const usersCollection = db.collection("users");
 
-    // Get all posts
+    // ✅ Save new user or return existing
+    app.post("/users", async (req, res) => {
+      const { email, name, image } = req.body;
+      let user = await usersCollection.findOne({ email });
+
+      if (!user) {
+        user = {
+          email,
+          name,
+          image,
+          membership: "free", // default free
+          createdAt: new Date(),
+        };
+        await usersCollection.insertOne(user);
+      }
+
+      res.send(user);
+    });
+
+    // ✅ Upgrade to premium
+    app.put("/users/:email/upgrade", async (req, res) => {
+      const email = req.params.email;
+      const result = await usersCollection.updateOne(
+        { email },
+        { $set: { membership: "premium" } }
+      );
+      res.send({ message: "Upgraded to Premium!" });
+    });
+
+    // ✅ Middleware to check membership before posting
+    async function checkMembership(req, res, next) {
+      const { email } = req.body;
+      const user = await usersCollection.findOne({ email });
+
+      if (!user) return res.status(403).send({ message: "User not found" });
+
+      if (user.membership === "free") {
+        const postCount = await postsCollection.countDocuments({ authorEmail: email });
+        if (postCount >= 5) {
+          return res.status(403).send({ message: "Free users can only post 5 times. Upgrade to Premium!" });
+        }
+      }
+
+      req.user = user;
+      next();
+    }
+
+    // ✅ Get all posts
     app.get("/posts", async (req, res) => {
       const posts = await postsCollection.find().sort({ _id: -1 }).toArray();
       res.send(posts);
     });
 
-    // Get single post
+    // ✅ Get single post
     app.get("/posts/:id", async (req, res) => {
       const post = await postsCollection.findOne({ _id: new ObjectId(req.params.id) });
       if (!post) return res.status(404).send({ message: "Post not found" });
       res.send(post);
     });
 
-    // Add new post
-    app.post("/posts", async (req, res) => {
-      const newPost = { ...req.body, upVote: 0, downVote: 0, comments: [] };
+    // ✅ Add new post (check membership)
+    app.post("/posts", checkMembership, async (req, res) => {
+      const newPost = {
+        ...req.body,
+        upVote: 0,
+        downVote: 0,
+        comments: [],
+        time: new Date().toLocaleString(),
+      };
       const result = await postsCollection.insertOne(newPost);
       res.send(result);
     });
 
-    // Update post
+    // ✅ Update post
     app.put("/posts/:id", async (req, res) => {
       const updatedData = req.body;
-      const result = await postsCollection.updateOne({ _id: new ObjectId(req.params.id) }, { $set: updatedData });
+      const result = await postsCollection.updateOne(
+        { _id: new ObjectId(req.params.id) },
+        { $set: updatedData }
+      );
       if (result.matchedCount === 0) return res.status(404).send({ message: "Post not found" });
       res.send({ message: "Post updated successfully" });
     });
 
-    // Delete post
+    // ✅ Delete post
     app.delete("/posts/:id", async (req, res) => {
       const result = await postsCollection.deleteOne({ _id: new ObjectId(req.params.id) });
       if (result.deletedCount === 0) return res.status(404).send({ message: "Post not found" });
       res.send({ message: "Post deleted successfully" });
     });
 
-    // Upvote
+    // ✅ Upvote
     app.put("/posts/:id/upvote", async (req, res) => {
       await postsCollection.updateOne({ _id: new ObjectId(req.params.id) }, { $inc: { upVote: 1 } });
       res.send({ message: "Upvoted successfully" });
     });
 
-    // Downvote
+    // ✅ Downvote
     app.put("/posts/:id/downvote", async (req, res) => {
       await postsCollection.updateOne({ _id: new ObjectId(req.params.id) }, { $inc: { downVote: 1 } });
       res.send({ message: "Downvoted successfully" });
     });
 
-    // Add comment
+    // ✅ Add comment
     app.put("/posts/:id/comment", async (req, res) => {
       const { authorName, authorImage, text } = req.body;
-      const newComment = { id: new ObjectId(), authorName, authorImage, text, time: new Date().toLocaleString() };
-      await postsCollection.updateOne({ _id: new ObjectId(req.params.id) }, { $push: { comments: newComment } });
+      const newComment = {
+        id: new ObjectId(),
+        authorName,
+        authorImage,
+        text,
+        time: new Date().toLocaleString(),
+      };
+      await postsCollection.updateOne(
+        { _id: new ObjectId(req.params.id) },
+        { $push: { comments: newComment } }
+      );
       res.send({ message: "Comment added successfully", comment: newComment });
     });
 
