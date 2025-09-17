@@ -2,6 +2,8 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { MongoClient, ServerApiVersion, ObjectId } from 'mongodb';
+import Stripe from "stripe";
+
 
 dotenv.config();
 const app = express();
@@ -141,6 +143,33 @@ async function run() {
       );
       res.send({ message: "Comment added successfully", comment: newComment });
     });
+    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+ app.post("/create-checkout-session", async (req, res) => {
+  const { email } = req.body;
+
+  try {
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ["card"],
+      mode: "payment",
+      line_items: [
+        {
+          price_data: {
+            currency: "usd",
+            product_data: { name: "Premium Membership" },
+            unit_amount: 2000, // $20
+          },
+          quantity: 1,
+        },
+      ],
+      success_url: "http://localhost:5173/membership?success=true&email=" + email,
+      cancel_url: "http://localhost:5173/membership?canceled=true",
+    });
+
+    res.json({ id: session.id, url: session.url });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
     console.log("✅ MongoDB Connected & API Ready");
   } catch (err) {
