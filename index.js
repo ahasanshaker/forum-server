@@ -4,7 +4,6 @@ import dotenv from 'dotenv';
 import { MongoClient, ServerApiVersion, ObjectId } from 'mongodb';
 import Stripe from "stripe";
 
-
 dotenv.config();
 const app = express();
 const port = process.env.PORT || 3000;
@@ -19,10 +18,11 @@ const client = new MongoClient(uri, {
 
 async function run() {
   try {
-    await client.connect();
+    // await client.connect();
     const db = client.db("forumDB");
     const postsCollection = db.collection("posts");
     const usersCollection = db.collection("users");
+    const notificationsCollection = db.collection("notifications");
 
     // ✅ Save new user or return existing
     app.post("/users", async (req, res) => {
@@ -34,7 +34,7 @@ async function run() {
           email,
           name,
           image,
-          membership: "free", // default free
+          membership: "free",
           createdAt: new Date(),
         };
         await usersCollection.insertOne(user);
@@ -53,15 +53,24 @@ async function run() {
       res.send({ message: "Upgraded to Premium!" });
     });
 
-    // ✅ Middleware to check membership before posting
+    // ✅ Middleware to check membership
     async function checkMembership(req, res, next) {
-      const { email } = req.body;
-      const user = await usersCollection.findOne({ email });
+      const { authorEmail, authorName, authorImage } = req.body;
+      let user = await usersCollection.findOne({ email: authorEmail });
 
-      if (!user) return res.status(403).send({ message: "User not found" });
+      if (!user) {
+        user = {
+          email: authorEmail,
+          name: authorName || "Anonymous",
+          image: authorImage || "",
+          membership: "free",
+          createdAt: new Date(),
+        };
+        await usersCollection.insertOne(user);
+      }
 
       if (user.membership === "free") {
-        const postCount = await postsCollection.countDocuments({ authorEmail: email });
+        const postCount = await postsCollection.countDocuments({ authorEmail });
         if (postCount >= 5) {
           return res.status(403).send({ message: "Free users can only post 5 times. Upgrade to Premium!" });
         }
@@ -71,33 +80,48 @@ async function run() {
       next();
     }
 
-    // ✅ Get all posts
+    // ✅ Posts routes
     app.get("/posts", async (req, res) => {
       const posts = await postsCollection.find().sort({ _id: -1 }).toArray();
       res.send(posts);
     });
 
-    // ✅ Get single post
     app.get("/posts/:id", async (req, res) => {
       const post = await postsCollection.findOne({ _id: new ObjectId(req.params.id) });
       if (!post) return res.status(404).send({ message: "Post not found" });
       res.send(post);
     });
 
-    // ✅ Add new post (check membership)
     app.post("/posts", checkMembership, async (req, res) => {
+      const { authorEmail, authorName, title, content } = req.body;
       const newPost = {
-        ...req.body,
+        authorEmail,
+        authorName,
+        title,
+        content,
         upVote: 0,
         downVote: 0,
         comments: [],
         time: new Date().toLocaleString(),
       };
+
       const result = await postsCollection.insertOne(newPost);
+
+      // notifications
+      const otherUsers = await usersCollection.find({ email: { $ne: authorEmail } }).toArray();
+      const notifications = otherUsers.map(user => ({
+        userEmail: user.email,
+        type: "new_post",
+        message: `${authorName} added a new post: ${title}`,
+        read: false,
+        createdAt: new Date(),
+      }));
+
+      if (notifications.length) await notificationsCollection.insertMany(notifications);
+
       res.send(result);
     });
 
-    // ✅ Update post
     app.put("/posts/:id", async (req, res) => {
       const updatedData = req.body;
       const result = await postsCollection.updateOne(
@@ -108,26 +132,24 @@ async function run() {
       res.send({ message: "Post updated successfully" });
     });
 
-    // ✅ Delete post
     app.delete("/posts/:id", async (req, res) => {
       const result = await postsCollection.deleteOne({ _id: new ObjectId(req.params.id) });
       if (result.deletedCount === 0) return res.status(404).send({ message: "Post not found" });
       res.send({ message: "Post deleted successfully" });
     });
 
-    // ✅ Upvote
+    // ✅ Votes
     app.put("/posts/:id/upvote", async (req, res) => {
       await postsCollection.updateOne({ _id: new ObjectId(req.params.id) }, { $inc: { upVote: 1 } });
       res.send({ message: "Upvoted successfully" });
     });
 
-    // ✅ Downvote
     app.put("/posts/:id/downvote", async (req, res) => {
       await postsCollection.updateOne({ _id: new ObjectId(req.params.id) }, { $inc: { downVote: 1 } });
       res.send({ message: "Downvoted successfully" });
     });
 
-    // ✅ Add comment
+    // ✅ Comments
     app.put("/posts/:id/comment", async (req, res) => {
       const { authorName, authorImage, text } = req.body;
       const newComment = {
@@ -143,33 +165,50 @@ async function run() {
       );
       res.send({ message: "Comment added successfully", comment: newComment });
     });
-    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
- app.post("/create-checkout-session", async (req, res) => {
-  const { email } = req.body;
 
-  try {
-    const session = await stripe.checkout.sessions.create({
-      payment_method_types: ["card"],
-      mode: "payment",
-      line_items: [
-        {
-          price_data: {
-            currency: "usd",
-            product_data: { name: "Premium Membership" },
-            unit_amount: 2000, // $20
-          },
-          quantity: 1,
-        },
-      ],
-      success_url: "http://localhost:5173/membership?success=true&email=" + email,
-      cancel_url: "http://localhost:5173/membership?canceled=true",
+    // ✅ Stripe
+    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+    app.post("/create-checkout-session", async (req, res) => {
+      const { email } = req.body;
+      try {
+        const session = await stripe.checkout.sessions.create({
+          payment_method_types: ["card"],
+          mode: "payment",
+          line_items: [
+            {
+              price_data: {
+                currency: "usd",
+                product_data: { name: "Premium Membership" },
+                unit_amount: 2000,
+              },
+              quantity: 1,
+            },
+          ],
+          success_url: `https://forum-server-gilt.vercel.app/membership?success=true&email=${email}`,
+          cancel_url: `https://forum-server-gilt.vercel.app/membership?canceled=true`,
+        });
+        res.json({ id: session.id, url: session.url });
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
     });
 
-    res.json({ id: session.id, url: session.url });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+    // ✅ Notifications
+    app.get("/notifications/:email", async (req, res) => {
+      const email = req.params.email;
+      const notifications = await notificationsCollection
+        .find({ userEmail: email })
+        .sort({ createdAt: -1 })
+        .toArray();
+      const unreadCount = await notificationsCollection.countDocuments({ userEmail: email, read: false });
+      res.send({ notifications, unreadCount });
+    });
+
+    app.put("/notifications/:email/read", async (req, res) => {
+      const email = req.params.email;
+      await notificationsCollection.updateMany({ userEmail: email, read: false }, { $set: { read: true } });
+      res.send({ message: "Notifications marked as read" });
+    });
 
     console.log("✅ MongoDB Connected & API Ready");
   } catch (err) {
